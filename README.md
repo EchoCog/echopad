@@ -30,6 +30,17 @@ Visit our [documentation page](https://paddler.intentee.com/docs/introduction/wh
 
 [API documentation](https://paddler.intentee.com/api/introduction/using-paddler-api/) is also available.
 
+### Technical Architecture Documentation
+
+Comprehensive technical architecture documentation with Mermaid diagrams is available in the [`docs/`](./docs/) directory:
+
+- **[Architecture Overview](./docs/architecture/)** - System design and component relationships
+- **[Data Flow Documentation](./docs/data-flow/)** - Request processing and streaming flows  
+- **[Deployment Patterns](./docs/deployment/)** - Production deployment architectures
+- **[API Specifications](./docs/api/)** - Complete API documentation with protocols
+- **[Component Details](./docs/components/)** - In-depth component documentation
+- **[Diagram Index](./docs/DIAGRAMS.md)** - Index of all Mermaid diagrams
+
 [Video overview](https://www.youtube.com/watch?v=aT6QCL8lk08)
 
 ## Installation
