@@ -1,0 +1,348 @@
+schema InferenceWorkflow
+
+-- Formal specification for LLM inference workflow and state management
+
+-- Basic types and constants
+MAXCONTEXT == 32768
+MAXTOKENS == 4096
+MAXTEMPERATURE == 2.0
+
+RequestId == ℕ₁
+UserId == ℕ₁  
+ModelName == 𝔽
+Prompt == 𝔽
+Token == 𝔽
+Timestamp == ℕ
+
+-- Request processing states
+ProcessingState ::= Queued | Processing | Completed | Failed | Cancelled
+
+-- Priority levels for request scheduling
+Priority ::= Low | Normal | High | Critical
+
+schema InferenceParameters
+  temperature: ℝ
+  maxTokens: ℕ
+  topP: ℝ
+  topK: ℕ
+  frequencyPenalty: ℝ
+  presencePenalty: ℝ
+  stopSequences: ℙ Token
+  
+  0 ≤ temperature ≤ MAXTEMPERATURE
+  1 ≤ maxTokens ≤ MAXTOKENS
+  0 ≤ topP ≤ 1
+  0 ≤ topK ≤ 100
+  -2 ≤ frequencyPenalty ≤ 2
+  -2 ≤ presencePenalty ≤ 2
+
+schema TokenizationResult
+  tokens: seq Token
+  tokenCount: ℕ
+  encoding: 𝔽
+  
+  tokenCount = #tokens
+  tokenCount ≤ MAXCONTEXT
+
+schema InferenceWorkflowRequest
+  id: RequestId
+  userId: UserId
+  modelName: ModelName
+  prompt: Prompt
+  parameters: InferenceParameters
+  priority: Priority
+  submissionTime: Timestamp
+  state: ProcessingState
+
+schema InferenceWorkflowResponse  
+  requestId: RequestId
+  generatedTokens: seq Token
+  responseText: 𝔽
+  completionTime: Timestamp
+  processingDuration: ℕ
+  finishReason: FinishReason
+  usage: TokenUsage
+
+FinishReason ::= Length | Stop | ContentFilter | Error
+
+schema TokenUsage
+  promptTokens: ℕ
+  completionTokens: ℕ
+  totalTokens: ℕ
+  
+  totalTokens = promptTokens + completionTokens
+
+-- Streaming response for real-time generation
+schema StreamingChunk
+  requestId: RequestId
+  chunkId: ℕ
+  deltaText: 𝔽
+  deltaTokens: seq Token
+  finished: 𝔹
+  timestamp: Timestamp
+
+schema InferenceWorkflowState
+  pendingRequests: RequestId ⤔ InferenceWorkflowRequest
+  activeRequests: RequestId ⤔ InferenceWorkflowRequest  
+  completedRequests: RequestId ⤔ InferenceWorkflowResponse
+  failedRequests: RequestId ⤔ (InferenceWorkflowRequest × 𝔽)
+  
+  tokenizationCache: Prompt ⤔ TokenizationResult
+  responseCache: (Prompt × InferenceParameters) ⤔ InferenceWorkflowResponse
+  
+  queueCapacity: ℕ
+  activeCapacity: ℕ
+  
+  currentTime: Timestamp
+
+schema WorkflowInvariant
+  InferenceWorkflowState
+  
+  -- Queue constraints
+  #pendingRequests ≤ queueCapacity
+  #activeRequests ≤ activeCapacity
+  
+  -- Request ID uniqueness
+  dom pendingRequests ∩ dom activeRequests = ∅
+  dom activeRequests ∩ dom completedRequests = ∅
+  dom completedRequests ∩ dom failedRequests = ∅
+  
+  -- State consistency
+  ∀ r: ran pendingRequests • r.state = Queued
+  ∀ r: ran activeRequests • r.state = Processing  
+  ∀ r: dom completedRequests • completedRequests(r).requestId = r
+  
+  -- Time ordering
+  ∀ r₁, r₂: ran pendingRequests • 
+    r₁.priority = r₂.priority ⇒ r₁.submissionTime ≤ r₂.submissionTime
+
+-- Request submission operation
+schema SubmitRequest
+  ΔInferenceWorkflowState
+  newRequest?: InferenceWorkflowRequest
+  result!: RequestSubmissionResult
+  
+  newRequest?.id ∉ (dom pendingRequests ∪ dom activeRequests ∪ dom completedRequests)
+  newRequest?.state = Queued
+  newRequest?.submissionTime = currentTime
+  
+  #pendingRequests < queueCapacity ⇒ (
+    pendingRequests' = pendingRequests ∪ {newRequest?.id ↦ newRequest?} ∧
+    result! = Accepted
+  )
+  
+  #pendingRequests ≥ queueCapacity ⇒ (
+    pendingRequests' = pendingRequests ∧
+    result! = QueueFull
+  )
+
+RequestSubmissionResult ::= Accepted | QueueFull | Invalid
+
+-- Request scheduling based on priority
+schema ScheduleNextRequest
+  ΔInferenceWorkflowState
+  selectedRequest!: InferenceWorkflowRequest
+  
+  pendingRequests ≠ ∅
+  #activeRequests < activeCapacity
+  
+  -- Select highest priority request, then oldest
+  selectedRequest! ∈ ran pendingRequests
+  ∀ r: ran pendingRequests • 
+    selectedRequest!.priority ≥ r.priority ∧
+    (selectedRequest!.priority = r.priority ⇒ 
+     selectedRequest!.submissionTime ≤ r.submissionTime)
+  
+  pendingRequests' = {selectedRequest!.id} ⩤ pendingRequests
+  activeRequests' = activeRequests ∪ 
+    {selectedRequest!.id ↦ (selectedRequest! with state := Processing)}
+
+-- Tokenization operation
+schema TokenizePrompt
+  ΞInferenceWorkflowState
+  prompt?: Prompt
+  result!: TokenizationResult
+  
+  prompt? ∈ dom tokenizationCache ⇒ result! = tokenizationCache(prompt?)
+  prompt? ∉ dom tokenizationCache ⇒ (
+    result!.tokens ≠ ⟨⟩ ∧
+    result!.tokenCount ≤ MAXCONTEXT ∧
+    result!.encoding ≠ ""
+  )
+
+-- Inference execution
+schema ExecuteInference
+  ΔInferenceWorkflowState
+  request?: InferenceWorkflowRequest
+  response!: InferenceWorkflowResponse
+  
+  request?.id ∈ dom activeRequests
+  request?.state = Processing
+  
+  -- Check cache first
+  (request?.prompt, request?.parameters) ∈ dom responseCache ⇒
+    response! = responseCache((request?.prompt, request?.parameters))
+  
+  -- Execute inference
+  (request?.prompt, request?.parameters) ∉ dom responseCache ⇒ (
+    response!.requestId = request?.id ∧
+    response!.processingDuration > 0 ∧
+    response!.completionTime = currentTime ∧
+    response!.usage.promptTokens ≤ MAXCONTEXT ∧
+    response!.usage.completionTokens ≤ request?.parameters.maxTokens
+  )
+  
+  activeRequests' = {request?.id} ⩤ activeRequests
+  completedRequests' = completedRequests ∪ {request?.id ↦ response!}
+
+-- Handle inference failure
+schema HandleInferenceFailure
+  ΔInferenceWorkflowState
+  request?: InferenceWorkflowRequest
+  errorMessage?: 𝔽
+  
+  request?.id ∈ dom activeRequests
+  
+  activeRequests' = {request?.id} ⩤ activeRequests
+  failedRequests' = failedRequests ∪ {request?.id ↦ (request?, errorMessage?)}
+
+-- Streaming inference operation
+schema StreamingInference
+  ΔInferenceWorkflowState
+  request?: InferenceWorkflowRequest
+  chunks!: seq StreamingChunk
+  
+  request?.id ∈ dom activeRequests
+  
+  -- Generate chunks sequentially
+  ∀ i: 1..#chunks! • 
+    chunks!(i).requestId = request?.id ∧
+    chunks!(i).chunkId = i ∧
+    chunks!(i).timestamp ≥ currentTime
+  
+  -- Last chunk marks completion
+  chunks!(#chunks!).finished = true
+  
+  -- Convert to completed response
+  let finalResponse == InferenceWorkflowResponse |
+    finalResponse.requestId = request?.id ∧
+    finalResponse.responseText = 
+      ⋃{c: ran chunks! • c.deltaText} ∧
+    finalResponse.generatedTokens = 
+      ⋃/({c: ran chunks! • c.deltaTokens}) ∧
+    finalResponse.completionTime = chunks!(#chunks!).timestamp •
+  
+  activeRequests' = {request?.id} ⩤ activeRequests ∧
+  completedRequests' = completedRequests ∪ {request?.id ↦ finalResponse}
+
+-- Cache management
+schema UpdateCache
+  ΔInferenceWorkflowState
+  prompt?: Prompt
+  tokenization?: TokenizationResult
+  parameters?: InferenceParameters
+  response?: InferenceWorkflowResponse
+  
+  tokenization? ≠ ⊥ ⇒ 
+    tokenizationCache' = tokenizationCache ∪ {prompt? ↦ tokenization?}
+  
+  response? ≠ ⊥ ⇒
+    responseCache' = responseCache ∪ {(prompt?, parameters?) ↦ response?}
+
+-- Queue management operations
+schema ClearExpiredRequests
+  ΔInferenceWorkflowState
+  timeout?: ℕ
+  
+  let expiredRequests == 
+    {r: ran pendingRequests | currentTime - r.submissionTime > timeout?} •
+  
+  pendingRequests' = pendingRequests ⩤ 
+    {r: expiredRequests • r.id}
+
+schema CancelRequest
+  ΔInferenceWorkflowState
+  requestId?: RequestId
+  result!: CancellationResult
+  
+  requestId? ∈ dom pendingRequests ⇒ (
+    pendingRequests' = {requestId?} ⩤ pendingRequests ∧
+    result! = Cancelled
+  )
+  
+  requestId? ∈ dom activeRequests ⇒ (
+    activeRequests' = {requestId?} ⩤ activeRequests ∧
+    result! = Cancelled
+  )
+  
+  requestId? ∉ (dom pendingRequests ∪ dom activeRequests) ⇒
+    result! = NotFound
+
+CancellationResult ::= Cancelled | NotFound | AlreadyCompleted
+
+-- Performance monitoring
+schema WorkflowMetrics
+  InferenceWorkflowState
+  
+  queueUtilization: ℝ
+  activeUtilization: ℝ
+  averageWaitTime: ℝ
+  averageProcessingTime: ℝ
+  successRate: ℝ
+  cacheHitRate: ℝ
+  
+  queueUtilization = #pendingRequests / queueCapacity
+  activeUtilization = #activeRequests / activeCapacity
+  
+  successRate = #completedRequests / 
+    (#completedRequests + #failedRequests)
+  
+  0 ≤ queueUtilization ≤ 1
+  0 ≤ activeUtilization ≤ 1
+  0 ≤ successRate ≤ 1
+  0 ≤ cacheHitRate ≤ 1
+
+-- Workflow operations
+WorkflowOperation ==
+  SubmitRequest ∨ ScheduleNextRequest ∨ 
+  ExecuteInference ∨ HandleInferenceFailure ∨
+  StreamingInference ∨ UpdateCache ∨
+  ClearExpiredRequests ∨ CancelRequest
+
+-- System initialization
+schema InitWorkflow
+  InferenceWorkflowState'
+  
+  pendingRequests' = ∅
+  activeRequests' = ∅
+  completedRequests' = ∅
+  failedRequests' = ∅
+  tokenizationCache' = ∅
+  responseCache' = ∅
+  queueCapacity' = 1000
+  activeCapacity' = 100
+  currentTime' = 0
+
+-- Complete workflow specification
+WorkflowSpec == InitWorkflow ∧ □[WorkflowOperation ∧ WorkflowInvariant]
+
+-- Safety properties
+theorem QueueNeverOverflows
+  WorkflowSpec ⇒ □(#pendingRequests ≤ queueCapacity)
+
+theorem ActiveNeverOverflows  
+  WorkflowSpec ⇒ □(#activeRequests ≤ activeCapacity)
+
+theorem RequestIdsUnique
+  WorkflowSpec ⇒ □(
+    dom pendingRequests ∩ dom activeRequests = ∅ ∧
+    dom activeRequests ∩ dom completedRequests = ∅
+  )
+
+-- Liveness properties
+theorem RequestsEventuallyProcessed
+  WorkflowSpec ∧ □◇(#activeRequests < activeCapacity) ⇒
+  □(pendingRequests ≠ ∅ ⇒ ◇(#pendingRequests < #pendingRequests))
+
+theorem SystemMakesProgress
+  WorkflowSpec ⇒ □◇(#completedRequests ≠ #completedRequests)
