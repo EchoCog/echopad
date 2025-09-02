@@ -27,6 +27,8 @@ pub mod embedding_input_tokenized;
 pub mod embedding_normalization_method;
 pub mod embedding_result;
 pub mod generated_token_result;
+pub mod grammar_parser;
+pub mod grammar_service;
 pub mod huggingface_model_reference;
 pub mod inference_parameters;
 pub mod jsonrpc;

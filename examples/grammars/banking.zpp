@@ -1,0 +1,41 @@
+schema BankingSystem
+
+schema Account
+  accountNumber: ℕ
+  balance: ℤ  
+  status: Status
+
+schema Status ::= Active | Frozen | Closed
+
+schema BankingOperations
+
+schema Deposit
+  Δ(Account)
+  amount?: ℕ
+  amount? > 0
+  status = Active
+  balance' = balance + amount?
+
+schema Withdraw  
+  Δ(Account)
+  amount?: ℕ
+  amount? > 0
+  amount? ≤ balance
+  status = Active
+  balance' = balance - amount?
+
+schema Freeze
+  Δ(Account)
+  status = Active
+  status' = Frozen
+  balance' = balance
+
+schema Close
+  Δ(Account) 
+  balance = 0
+  status' = Closed
+
+schema AccountInvariant
+  Account
+  balance ≥ 0 ⇒ status ∈ {Active, Frozen}
+  balance < 0 ⇒ status = Closed
